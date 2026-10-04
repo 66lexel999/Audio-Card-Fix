@@ -169,7 +169,9 @@ function Invoke-Doctor {
     Check ($out -notmatch 'Unexpected error') 'no "Unexpected error"'
     Check ($err.Trim() -eq '') 'nothing written to stderr (no PowerShell error records)'
     Check ($out -match '=== Summary') 'printed the Summary'
-    if ($null -eq $Answers) { Check ($out -notmatch '>> ') 'asked no questions in -ReportOnly mode' }
+    # Read-Host does not echo its prompt when the keyboard is redirected, so look in the report too
+    # (the doctor logs every question it asks there).
+    if ($null -eq $Answers) { Check (($out -notmatch '>> ') -and ($report -notmatch '(?m)^\s*>> ')) 'asked no questions in -ReportOnly mode' }
     Check (-not (Test-Path (Join-Path $env:TEMP 'FocusriteDoctor-AsioTest.ps1'))) 'left no live-test helper file in TEMP'
     Check ($report -match 'FOCUSRITE DOCTOR' -and $report -match '=== Summary') 'saved the report file'
     Check ($out -notmatch 'could not run on this PC') 'the live test was able to run (no TEST_UNAVAILABLE)'
@@ -296,7 +298,7 @@ try {
     $r = Invoke-Doctor -Answers @('n', '', 'n') -TimeoutSec 240
     Show-Output $r
     $ssAfter = (@(& powercfg.exe /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226) -join "`n")
-    Check ($r.Out -match 'Turn off USB selective suspend\? \(stops Windows powering down USB audio\) \[y/n\]') 'PC-changing question shows [y/n] (no default)'
+    Check ($r.Report -match 'Turn off USB selective suspend\? \(stops Windows powering down USB audio\) \[y/n\]') 'PC-changing question shows [y/n] (no default)'
     Check ($r.Out -match 'This changes something on your PC, so please type Y') 'Enter alone is not taken as yes'
     Check ($r.Out -notmatch 'USB selective suspend is now off') 'nothing was changed'
     Check ($ssBefore -eq $ssAfter) 'power setting really unchanged'
