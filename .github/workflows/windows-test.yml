@@ -1,0 +1,27 @@
+# Runs Focusrite-Doctor.ps1 on a real Windows machine (GitHub's Windows runner) with
+# Windows PowerShell 5.1, using a fake "Focusrite USB ASIO" driver. See tests/Run-WindowsTests.ps1.
+name: Windows test
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  windows-powershell-5:
+    name: Windows PowerShell 5.1, no Focusrite connected
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Focusrite Doctor tests
+        shell: powershell
+        run: .\tests\Run-WindowsTests.ps1 -OutDir "$env:RUNNER_TEMP\focusrite-doctor-test"
+
+      - name: Upload reports and console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: focusrite-doctor-test-output
+          path: ${{ runner.temp }}/focusrite-doctor-test
+          if-no-files-found: ignore

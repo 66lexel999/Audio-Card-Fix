@@ -7,8 +7,9 @@ Fixes "Cannot open Focusrite USB ASIO. (Error code: 0x54f)" in TONEX / AmpliTube
 4. In the extracted folder, double-click  Run-Focusrite-Doctor.bat
    - If Windows says "Windows protected your PC": click "More info" > "Run anyway".
    - Click "Yes" when Windows asks for Administrator permission.
-5. Answer the questions: Y = yes, N = no, Enter = the suggested answer.
-   Nothing on your PC is changed unless you answer Y.
+5. Answer the questions: type Y (yes) or N (no), then press Enter.
+   Just pressing Enter picks the suggested answer - except for anything that
+   changes your PC: for those you must type Y. Nothing is changed unless you do.
 6. At the end, the report is saved on your Desktop AND copied to the clipboard.
    Paste it (Ctrl+V) into WhatsApp / Discord and send it back.
 
