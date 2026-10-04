@@ -130,21 +130,26 @@ function Add-Finding {
 }
 
 # Yes/No question. Enter = the suggested answer. Also accepts the Arabic-keyboard Y/N keys.
+# -Changes: the answer changes something on the PC, so Enter alone is not enough - Y must be typed.
 function Ask {
-    param([string]$Question, [bool]$Default = $true)
+    param([string]$Question, [bool]$Default = $true, [switch]$Changes)
     $hint = '[Y/n]'
     if (-not $Default) { $hint = '[y/N]' }
-    while ($true) {
+    if ($Changes) { $hint = '[y/n]' }
+    for ($try = 1; $try -le 5; $try++) {
         Write-Host ''
-        $answer = Read-Host ('  >> ' + $Question + ' ' + $hint)
-        if ($null -eq $answer) { $answer = '' }
+        $answer = [string](Read-Host ('  >> ' + $Question + ' ' + $hint))
         $t = $answer.Trim().ToLowerInvariant()
         Log ('  >> ' + $Question + ' ' + $hint + ' ' + $answer)
-        if ($t -eq '') { return $Default }
+        if ($t -eq '' -and -not $Changes) { return $Default }
         if ($t -eq 'y' -or $t -eq 'yes' -or $t -eq [string][char]0x063A) { return $true }
         if ($t -eq 'n' -or $t -eq 'no' -or $t -eq [string][char]0x0649) { return $false }
-        Write-Host '     Please type Y (yes) or N (no), then press Enter.' -ForegroundColor DarkGray
+        if ($t -eq '') { Write-Host '     This changes something on your PC, so please type Y (yes) or N (no), then press Enter.' -ForegroundColor DarkGray }
+        else { Write-Host '     Please type Y (yes) or N (no), then press Enter.' -ForegroundColor DarkGray }
     }
+    # No usable answer after 5 tries (or no keyboard at all): never take that as a yes to a change.
+    Log '     (no usable answer)'
+    return ($Default -and -not $Changes)
 }
 
 function Wait-Enter {
@@ -601,7 +606,10 @@ function Get-FocusriteEndpoints {
                 $state = 0
                 try { $state = ([int]$dk.GetValue('DeviceState')) -band 0xF } catch { }
                 $fmt = ConvertFrom-WaveFormat ([byte[]]$pk.GetValue('{f19f064d-082c-4e27-bc73-6882a1bb8e4c},0'))
-                $excl = $pk.GetValue('{b3f8fa53-0004-438e-9003-51a46e139bfc},3')         # "Allow exclusive control"
+                # "Allow exclusive control": normally a DWORD (0 = off). Anything else is treated as "not set".
+                $excl = $null
+                $exRaw = $pk.GetValue('{b3f8fa53-0004-438e-9003-51a46e139bfc},3')
+                if ($exRaw -is [int]) { $excl = $exRaw }
                 $stateText = 'state ' + $state
                 switch ($state) { 1 { $stateText = 'active' } 2 { $stateText = 'DISABLED' } 4 { $stateText = 'not present' } 8 { $stateText = 'unplugged' } }
                 $flowName = 'Playback'
@@ -1093,6 +1101,7 @@ function ConvertFrom-ProbeOutput {
 function Invoke-AsioProbe {
     param([string]$Clsid, [switch]$NoStream)
     $r = @{}
+    $probeFile = ''
     try {
         $probeFile = Join-Path $env:TEMP 'FocusriteDoctor-AsioTest.ps1'
         [System.IO.File]::WriteAllText($probeFile, $Script:ProbeScriptText, [System.Text.Encoding]::ASCII)
@@ -1139,6 +1148,8 @@ function Invoke-AsioProbe {
     } catch {
         $r['RESULT'] = 'TEST_UNAVAILABLE'
         $r['ERROR'] = $_.Exception.Message
+    } finally {
+        if ($probeFile) { Remove-Item -LiteralPath $probeFile -Force -ErrorAction SilentlyContinue }
     }
     return $r
 }
@@ -1223,7 +1234,7 @@ function Fix-CloseApps {
             try { $p.Refresh(); $gone = $p.HasExited } catch { $gone = $true }
         }
         if (-not $gone) {
-            if (Ask ($p.ProcessName + ' is still open (it may be asking to save, or sitting in the system tray). Force it to close? Unsaved work in it will be lost.') $false) {
+            if (Ask ($p.ProcessName + ' is still open (it may be asking to save, or sitting in the system tray). Force it to close? Unsaved work in it will be lost.') $false -Changes) {
                 try { Stop-Process -Id $p.Id -Force -ErrorAction Stop; $gone = $true } catch { Warn ('Could not close it: ' + $_.Exception.Message) }
             }
         }
@@ -1653,7 +1664,9 @@ function Invoke-Main {
                 Bad ('"' + $m.Name + '" points to a file that is missing: ' + $m.Dll)
                 Add-Finding PROBLEM 'The Focusrite ASIO driver file is missing - reinstall the Focusrite driver.'
             } else {
-                Good ('"' + $m.Name + '" -> ' + $m.Dll + '  (file version ' + $m.DllVersion + ')')
+                $fv = ''
+                if ($m.DllVersion) { $fv = '  (file version ' + $m.DllVersion + ')' }
+                Good ('"' + $m.Name + '" -> ' + $m.Dll + $fv)
                 if ($Script:Binding.Version -and $m.DllVersion -match '^(\d+)[.,]') {
                     if ([int]$Matches[1] -ne $Script:Binding.Version.Major) {
                         Warn 'The ASIO part and the driver part are from different driver versions.'
@@ -1690,7 +1703,7 @@ function Invoke-Main {
             $fmt = 'format unknown'
             if ($e.Rate) { $fmt = '' + $e.Rate + ' Hz, ' + $e.Bits + '-bit' }
             $ex = 'exclusive mode allowed'
-            if ($null -ne $e.Exclusive -and [int]$e.Exclusive -eq 0) { $ex = 'exclusive mode off' }
+            if ($null -ne $e.Exclusive -and $e.Exclusive -eq 0) { $ex = 'exclusive mode off' }
             $line = $e.Flow + ': ' + $e.Name + ' - ' + $e.StateText + ' - ' + $fmt + ' - ' + $ex
             if ($e.State -eq 2) { Warn $line } else { Info $line }
         }
@@ -1771,7 +1784,7 @@ function Invoke-Main {
             $busy = @(Get-BusyApps)
             if ($busy.Count -gt 0 -and -not $ReportOnly) {
                 Warn ('Open right now: ' + (($busy | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', '))
-                if (Ask 'Close them before the test? (Save your work in them first!)' $true) { [void](Fix-CloseApps $busy) }
+                if (Ask 'Close them before the test? (Save your work in them first!)' $true -Changes) { [void](Fix-CloseApps $busy) }
             }
             $Script:ProbeWorks = Test-Driver 'Live test'
         }
@@ -1848,7 +1861,7 @@ function Invoke-Main {
                     $acted = $false
                     switch ($stepName) {
                         'driver' {
-                            if (Ask 'Switch the Focusrite over to the Focusrite driver? (Windows re-detects it - takes ~30 seconds)' $true) { $acted = [bool](Fix-GenericDriver) }
+                            if (Ask 'Switch the Focusrite over to the Focusrite driver? (Windows re-detects it - takes ~30 seconds)' $true -Changes) { $acted = [bool](Fix-GenericDriver) }
                         }
                         'reinstall' {
                             Bad 'The Focusrite driver is not attached, so it needs a clean (re)install first.'
@@ -1858,17 +1871,17 @@ function Invoke-Main {
                         }
                         'close' {
                             $b = @(Get-BusyApps)
-                            if ($b.Count -gt 0 -and (Ask ('Close ' + (($b | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ') + '? (save your work first)') $true)) { $acted = [bool](Fix-CloseApps $b) }
+                            if ($b.Count -gt 0 -and (Ask ('Close ' + (($b | ForEach-Object { $_.Name } | Select-Object -Unique) -join ', ') + '? (save your work first)') $true -Changes)) { $acted = [bool](Fix-CloseApps $b) }
                         }
                         'msd' {
                             $Script:MsdOffered = $true
                             if (Ask 'Switch MSD / Easy Start mode off now? (I will show you how)' $true) { $acted = [bool](Fix-MsdMode) }
                         }
                         'services' {
-                            if (Ask 'Restart the Windows Audio services? (all sound stops for a few seconds)' $true) { $acted = [bool](Fix-RestartAudioServices) }
+                            if (Ask 'Restart the Windows Audio services? (all sound stops for a few seconds)' $true -Changes) { $acted = [bool](Fix-RestartAudioServices) }
                         }
                         'device' {
-                            if (Ask 'Restart the Focusrite inside Windows? (like unplugging it, done by software)' $true) { $acted = [bool](Fix-RestartDevice) }
+                            if (Ask 'Restart the Focusrite inside Windows? (like unplugging it, done by software)' $true -Changes) { $acted = [bool](Fix-RestartDevice) }
                         }
                         'replug' {
                             if (Ask 'Re-plug the Focusrite into a different USB port? (I will walk you through it)' $true) { $acted = [bool](Fix-Replug) }
@@ -1896,12 +1909,12 @@ function Invoke-Main {
             }
             if ($Script:Asio4AllApps.Count -gt 0) {
                 $offered = $true
-                if (Ask 'Uninstall ASIO4ALL? (Focusrite recommends it)' $true) { Fix-RemoveAsio4All }
+                if (Ask 'Uninstall ASIO4ALL? (Focusrite recommends it)' $true -Changes) { Fix-RemoveAsio4All }
             }
             if ($Script:SelectiveSuspendOn) {
                 $offered = $true
                 if ($Script:IsAdmin) {
-                    if (Ask 'Turn off USB selective suspend? (stops Windows powering down USB audio)' $true) { Fix-SelectiveSuspend }
+                    if (Ask 'Turn off USB selective suspend? (stops Windows powering down USB audio)' $true -Changes) { Fix-SelectiveSuspend }
                 } else { Info 'USB selective suspend: needs Administrator to change - run the tool again and click Yes.' }
             }
             if ($Script:TopId -and ($Script:RateMismatch -or -not $fixed)) {

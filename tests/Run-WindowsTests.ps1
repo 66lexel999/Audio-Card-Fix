@@ -116,9 +116,10 @@ function Unregister-Mock {
     if (-not $hadAsioKey) { Remove-Item -Path 'HKLM:\SOFTWARE\ASIO' -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-# Runs the doctor with -ReportOnly like a user would (stdin closed, so a question would get no answer).
+# Runs the doctor like a user would. Default: -ReportOnly with the keyboard closed (stdin), so any
+# question gets no answer. With -Answers: normal mode, and those lines are "typed" one per question.
 function Invoke-Doctor {
-    param([string]$Mode = 'ok', [string]$Exe = $Ps64, [int]$TimeoutSec = 300)
+    param([string]$Mode = 'ok', [string]$Exe = $Ps64, [int]$TimeoutSec = 300, [string[]]$Answers = $null)
     $logPath = Join-Path $OutDir ($Scenario + '-driver-log.txt')
     Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
     $env:MOCKASIO_MODE = $Mode
@@ -126,13 +127,15 @@ function Invoke-Doctor {
     $env:FOCUSRITE_DOCTOR_BAT = '1'          # no "Press Enter to close" at the end
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
-    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $Doctor + '" -ReportOnly -NoElevate'
+    $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $Doctor + '" -NoElevate'
+    if ($null -eq $Answers) { $psi.Arguments += ' -ReportOnly' }
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     $p = [System.Diagnostics.Process]::Start($psi)
+    foreach ($a in @($Answers)) { if ($null -ne $a) { $p.StandardInput.WriteLine($a) } }
     $p.StandardInput.Close()
     $outTask = $p.StandardOutput.ReadToEndAsync()
     $errTask = $p.StandardError.ReadToEndAsync()
@@ -166,7 +169,8 @@ function Invoke-Doctor {
     Check ($out -notmatch 'Unexpected error') 'no "Unexpected error"'
     Check ($err.Trim() -eq '') 'nothing written to stderr (no PowerShell error records)'
     Check ($out -match '=== Summary') 'printed the Summary'
-    Check ($out -notmatch '>> ') 'asked no questions in -ReportOnly mode'
+    if ($null -eq $Answers) { Check ($out -notmatch '>> ') 'asked no questions in -ReportOnly mode' }
+    Check (-not (Test-Path (Join-Path $env:TEMP 'FocusriteDoctor-AsioTest.ps1'))) 'left no live-test helper file in TEMP'
     Check ($report -match 'FOCUSRITE DOCTOR' -and $report -match '=== Summary') 'saved the report file'
     Check ($out -notmatch 'could not run on this PC') 'the live test was able to run (no TEST_UNAVAILABLE)'
     if ($err.Trim()) { Write-Host $err -ForegroundColor Red }
@@ -282,6 +286,31 @@ try {
     Check ($r.Out -match 'BROKEN: driver file missing') 'marks the ASIO entry as broken'
     Check ($r.Out -match 'points to a file that is missing') 'explains the file is missing'
     Check ($r.Out -match 'Windows could not load the "Focusrite USB ASIO" driver file \(0x8007007E') 'live test: driver file could not be loaded'
+
+    # -------------------------------------------------------------------------
+    $Scenario = 'questions-enter-is-not-yes'
+    Title 'Scenario: normal mode, pressing Enter on a question that changes the PC'
+    Unregister-Mock
+    $ssBefore = (@(& powercfg.exe /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226) -join "`n")
+    # 1st question: walk through plugging in? -> n.  2nd: turn off USB selective suspend? -> Enter, then n.
+    $r = Invoke-Doctor -Answers @('n', '', 'n') -TimeoutSec 240
+    Show-Output $r
+    $ssAfter = (@(& powercfg.exe /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226) -join "`n")
+    Check ($r.Out -match 'Turn off USB selective suspend\? \(stops Windows powering down USB audio\) \[y/n\]') 'PC-changing question shows [y/n] (no default)'
+    Check ($r.Out -match 'This changes something on your PC, so please type Y') 'Enter alone is not taken as yes'
+    Check ($r.Out -notmatch 'USB selective suspend is now off') 'nothing was changed'
+    Check ($ssBefore -eq $ssAfter) 'power setting really unchanged'
+    Check ($r.Out -match 'Still not working\? Do these, in order') 'printed the next steps'
+
+    # -------------------------------------------------------------------------
+    $Scenario = 'questions-typed-yes'
+    Title 'Scenario: normal mode, typing Y to turn off USB selective suspend'
+    $r = Invoke-Doctor -Answers @('n', 'y') -TimeoutSec 240
+    $ss = (@(& powercfg.exe /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226) -join "`n")
+    Write-Host ('    powercfg now: ' + (($ss -split "`n" | Where-Object { $_ -match '0x' }) -join ' | '))
+    Check ($r.Out -match 'USB selective suspend is now off') 'says the setting was changed'
+    $m = [regex]::Matches($ss, '0x([0-9a-fA-F]{8})')
+    Check ($m.Count -ge 2 -and [Convert]::ToInt32($m[$m.Count - 2].Groups[1].Value, 16) -eq 0 -and [Convert]::ToInt32($m[$m.Count - 1].Groups[1].Value, 16) -eq 0) 'power setting really is off now (AC and DC)'
 
     # -------------------------------------------------------------------------
     $Scenario = 'started-32-bit'
